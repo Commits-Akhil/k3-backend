@@ -55,7 +55,39 @@ fitAddon.fit();
 let socket = null;
 
 
-function connectTerminal() {
+async function requestTerminalTicket() {
+    const accessToken = window.cyberlabAccessToken;
+    const sessionID = window.cyberlabSessionId;
+
+    if (!accessToken || !sessionID) {
+        throw new Error("Authentication and a READY lab session are required.");
+    }
+
+    const response = await fetch(
+        "/api/labs/sessions/" +
+        encodeURIComponent(sessionID) +
+        "/terminal-ticket",
+        {
+            method: "POST",
+            headers: {
+                "Authorization": "Bearer " + accessToken
+            }
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error("Unable to authorize the terminal.");
+    }
+
+    const payload = await response.json();
+    if (!payload.ticket) {
+        throw new Error("Unable to authorize the terminal.");
+    }
+    return payload.ticket;
+}
+
+
+async function connectTerminal() {
 
     if (
         socket &&
@@ -70,13 +102,6 @@ function connectTerminal() {
             : "ws:";
 
 
-    const wsURL =
-        protocol +
-        "//" +
-        window.location.host +
-        "/api/terminal";
-
-
     terminalStatus.textContent =
         "Connecting";
 
@@ -86,8 +111,23 @@ function connectTerminal() {
     );
 
 
-    socket =
-        new WebSocket(wsURL);
+    let ticket;
+    try {
+        ticket = await requestTerminalTicket();
+    } catch (error) {
+        terminalStatus.textContent = "Unauthorized";
+        terminal.write("\r\nTerminal authorization failed.\r\n");
+        return;
+    }
+
+    const wsURL =
+        protocol +
+        "//" +
+        window.location.host +
+        "/api/terminal?ticket=" +
+        encodeURIComponent(ticket);
+
+    socket = new WebSocket(wsURL);
 
 
     socket.binaryType =
@@ -286,7 +326,7 @@ guiButton.addEventListener(
     "click",
     () => {
         window.location.href =
-            "http://192.168.29.123:6080/vnc_auto.html";
+            "http://192.168.29.122:6080/vnc_auto.html";
     }
 );
 
