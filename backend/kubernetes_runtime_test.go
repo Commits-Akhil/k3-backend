@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	clienttesting "k8s.io/client-go/testing"
 )
 
@@ -214,6 +215,29 @@ func TestKubernetesRuntimeRejectsReferenceWithMismatchedIdentity(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Stop accepted a reference whose names do not match its labels")
+	}
+}
+
+func TestKubernetesRuntimeGUIProxyRejectsMismatchedLabels(t *testing.T) {
+	runtimeClient, clientset := newFakeRuntime(t)
+	runtimeClient.client.RESTConfig = &rest.Config{Host: "http://127.0.0.1"}
+	reference, err := runtimeClient.Create(context.Background(), RuntimeCreateRequest{
+		SessionID: "s-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		LabID:     "intro-linux",
+	})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	service, err := clientset.CoreV1().Services(defaultNamespace).Get(context.Background(), reference.ServiceName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get Service: %v", err)
+	}
+	service.Labels[sessionLabel] = "another-session"
+	if _, err := clientset.CoreV1().Services(defaultNamespace).Update(context.Background(), service, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("update Service: %v", err)
+	}
+	if _, err := runtimeClient.ResolveGUIProxyTarget(context.Background(), reference); err == nil {
+		t.Fatal("GUI proxy target resolved despite mismatched Service labels")
 	}
 }
 

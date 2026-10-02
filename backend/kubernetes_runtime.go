@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -14,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 )
 
@@ -243,6 +245,51 @@ func (runtime *KubernetesRuntime) StreamTerminal(ctx context.Context, reference 
 		Tty:               true,
 		TerminalSizeQueue: &terminalSizeQueue{context: ctx, sizes: sizes},
 	})
+}
+
+func (runtime *KubernetesRuntime) ResolveGUIProxyTarget(ctx context.Context, reference RuntimeReference) (guiProxyTarget, error) {
+	if runtime.client.RESTConfig == nil {
+		return guiProxyTarget{}, errors.New("Kubernetes GUI proxy configuration is unavailable")
+	}
+	if err := runtime.validateReference(reference); err != nil {
+		return guiProxyTarget{}, err
+	}
+	pod, err := runtime.client.Clientset.CoreV1().Pods(reference.Namespace).Get(ctx, reference.PodName, metav1.GetOptions{})
+	if err != nil {
+		return guiProxyTarget{}, errors.New("get lab Pod for GUI proxy")
+	}
+	service, err := runtime.client.Clientset.CoreV1().Services(reference.Namespace).Get(ctx, reference.ServiceName, metav1.GetOptions{})
+	if err != nil {
+		return guiProxyTarget{}, errors.New("get lab Service for GUI proxy")
+	}
+	if !ownedByReference(pod.Labels, reference.Labels) || !ownedByReference(service.Labels, reference.Labels) {
+		return guiProxyTarget{}, errors.New("lab GUI resource ownership labels do not match")
+	}
+	if !serviceExposesGUI(service) {
+		return guiProxyTarget{}, errors.New("lab Service does not expose the GUI")
+	}
+	proxyURL := runtime.client.Clientset.CoreV1().RESTClient().Get().
+		Namespace(reference.Namespace).
+		Resource("services").
+		Name(reference.ServiceName + ":" + strconv.Itoa(int(containerPort))).
+		SubResource("proxy").URL()
+	transport, err := rest.TransportFor(runtime.client.RESTConfig)
+	if err != nil {
+		return guiProxyTarget{}, errors.New("create Kubernetes GUI proxy transport")
+	}
+	return guiProxyTarget{URL: proxyURL, Transport: transport}, nil
+}
+
+func serviceExposesGUI(service *corev1.Service) bool {
+	if service == nil || service.Spec.Type != corev1.ServiceTypeClusterIP {
+		return false
+	}
+	for _, port := range service.Spec.Ports {
+		if port.Name == "gui" && port.Port == containerPort && port.TargetPort.IntVal == containerPort {
+			return true
+		}
+	}
+	return false
 }
 
 type terminalSizeQueue struct {

@@ -20,6 +20,7 @@ type labSessionService interface {
 type LabSessionHandler struct {
 	service        labSessionService
 	terminalTicket *TerminalHandler
+	gui            *GUIHandler
 }
 
 type createLabSessionRequest struct {
@@ -45,8 +46,20 @@ func RegisterLabSessionRoutes(mux *http.ServeMux, handler *LabSessionHandler, jw
 	}
 	authenticated := RequireAuthentication(jwtService)
 	mux.Handle("/api/labs/sessions", authenticated(http.HandlerFunc(handler.collection)))
-	mux.Handle("/api/labs/sessions/", authenticated(http.HandlerFunc(handler.member)))
+	mux.Handle("/api/labs/sessions/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.memberRoute(w, r, jwtService)
+	}))
 	return nil
+}
+
+func (handler *LabSessionHandler) memberRoute(w http.ResponseWriter, r *http.Request, jwtService *JWTService) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/labs/sessions/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) >= 2 && parts[1] == "gui" && parts[0] != "" && handler.gui != nil {
+		handler.member(w, r)
+		return
+	}
+	RequireAuthentication(jwtService)(http.HandlerFunc(handler.member)).ServeHTTP(w, r)
 }
 
 func (handler *LabSessionHandler) collection(w http.ResponseWriter, r *http.Request) {
@@ -73,6 +86,14 @@ func (handler *LabSessionHandler) member(w http.ResponseWriter, r *http.Request)
 	}
 	if len(parts) == 2 && parts[1] == "terminal-ticket" && parts[0] != "" && handler.terminalTicket != nil {
 		handler.terminalTicket.IssueTicket(w, r, parts[0])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "gui-ticket" && parts[0] != "" && handler.gui != nil {
+		handler.gui.IssueTicket(w, r, parts[0])
+		return
+	}
+	if len(parts) >= 2 && parts[1] == "gui" && parts[0] != "" && handler.gui != nil {
+		handler.gui.ServeHTTP(w, r, parts[0])
 		return
 	}
 	writeAPIError(w, http.StatusNotFound, "not_found", "not found")

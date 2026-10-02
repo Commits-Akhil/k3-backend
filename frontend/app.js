@@ -1,345 +1,48 @@
-const terminalButton =
-    document.getElementById("terminalButton");
+const state = { accessToken: null, user: null, sessions: [], currentSession: null, socket: null, terminal: null, fitAddon: null };
+const elements = {};
+["authView", "dashboardView", "detailsView", "globalMessage", "userBar", "userEmail", "loginTab", "registerTab", "loginForm", "registerForm", "sessionsList", "sessionsLoading", "sessionsEmpty", "createForm", "createSubmit", "refreshButton", "backButton", "detailsTitle", "detailsID", "detailsState", "detailsMeta", "accessHint", "terminalButton", "guiButton", "stopButton", "terminalPanel", "terminalElement", "terminalStatus", "guiPanel", "guiFrame", "guiStatus"].forEach((id) => { elements[id] = document.getElementById(id); });
 
-const guiButton =
-    document.getElementById("guiButton");
+function showMessage(message, kind = "error") { elements.globalMessage.textContent = message; elements.globalMessage.className = `mb-6 rounded-md border px-4 py-3 text-sm ${kind === "success" ? "border-emerald-800 bg-emerald-950 text-emerald-200" : "border-red-800 bg-red-950 text-red-200"}`; elements.globalMessage.classList.remove("hidden"); }
+function clearMessage() { elements.globalMessage.textContent = ""; elements.globalMessage.classList.add("hidden"); }
+function setBusy(button, busy, text) { if (!button) return; if (busy) { button.dataset.originalText = button.textContent; button.textContent = text; } else if (button.dataset.originalText) button.textContent = button.dataset.originalText; button.disabled = busy; button.classList.toggle("opacity-60", busy); }
 
-const terminalPanel =
-    document.getElementById("terminalPanel");
-
-const guiPanel =
-    document.getElementById("guiPanel");
-
-const terminalElement =
-    document.getElementById("terminal");
-
-const guiFrame =
-    document.getElementById("guiFrame");
-
-const terminalStatus =
-    document.getElementById("terminalStatus");
-
-
-// ======================================================
-// TERMINAL
-// ======================================================
-
-const terminal = new Terminal({
-    cursorBlink: true,
-    fontSize: 14,
-    fontFamily: "monospace",
-    convertEol: true,
-    scrollback: 5000,
-
-    theme: {
-        background: "#000000",
-        foreground: "#ffffff"
-    }
-});
-
-
-const fitAddon =
-    new FitAddon.FitAddon();
-
-terminal.loadAddon(fitAddon);
-
-terminal.open(terminalElement);
-
-fitAddon.fit();
-
-
-// ======================================================
-// WEBSOCKET
-// ======================================================
-
-let socket = null;
-
-
-async function requestTerminalTicket() {
-    const accessToken = window.cyberlabAccessToken;
-    const sessionID = window.cyberlabSessionId;
-
-    if (!accessToken || !sessionID) {
-        throw new Error("Authentication and a READY lab session are required.");
-    }
-
-    const response = await fetch(
-        "/api/labs/sessions/" +
-        encodeURIComponent(sessionID) +
-        "/terminal-ticket",
-        {
-            method: "POST",
-            headers: {
-                "Authorization": "Bearer " + accessToken
-            }
-        }
-    );
-
-    if (!response.ok) {
-        throw new Error("Unable to authorize the terminal.");
-    }
-
-    const payload = await response.json();
-    if (!payload.ticket) {
-        throw new Error("Unable to authorize the terminal.");
-    }
-    return payload.ticket;
+async function apiRequest(path, options = {}) {
+    const headers = new Headers(options.headers || {});
+    if (options.body !== undefined) headers.set("Content-Type", "application/json");
+    if (state.accessToken) headers.set("Authorization", `Bearer ${state.accessToken}`);
+    let response;
+    try { response = await fetch(path, { ...options, headers, credentials: "same-origin" }); } catch (error) { throw new Error("The server could not be reached."); }
+    let payload = null;
+    try { payload = await response.json(); } catch (error) { }
+    if (!response.ok) { if (response.status === 401 && state.accessToken) { clearAuthentication(); showView("auth"); } throw new Error(payload?.error?.message || "The request could not be completed."); }
+    return payload;
 }
 
-
-async function connectTerminal() {
-
-    if (
-        socket &&
-        socket.readyState === WebSocket.OPEN
-    ) {
-        return;
-    }
-
-    const protocol =
-        window.location.protocol === "https:"
-            ? "wss:"
-            : "ws:";
-
-
-    terminalStatus.textContent =
-        "Connecting";
-
-
-    terminal.write(
-        "\r\nConnecting to Kali...\r\n"
-    );
-
-
-    let ticket;
-    try {
-        ticket = await requestTerminalTicket();
-    } catch (error) {
-        terminalStatus.textContent = "Unauthorized";
-        terminal.write("\r\nTerminal authorization failed.\r\n");
-        return;
-    }
-
-    const wsURL =
-        protocol +
-        "//" +
-        window.location.host +
-        "/api/terminal?ticket=" +
-        encodeURIComponent(ticket);
-
-    socket = new WebSocket(wsURL);
-
-
-    socket.binaryType =
-        "arraybuffer";
-
-
-    // ==================================================
-    // CONNECTED
-    // ==================================================
-
-    socket.onopen = () => {
-
-        terminalStatus.textContent =
-            "Connected";
-
-
-        terminal.write(
-            "\r\nConnected.\r\n\r\n"
-        );
-
-
-        sendResize();
-
-        terminal.focus();
-    };
-
-
-    // ==================================================
-    // SERVER → TERMINAL
-    // ==================================================
-
-    socket.onmessage =
-        async (event) => {
-
-            if (
-                event.data instanceof ArrayBuffer
-            ) {
-
-                terminal.write(
-                    new Uint8Array(
-                        event.data
-                    )
-                );
-
-            }
-
-            else if (
-                event.data instanceof Blob
-            ) {
-
-                const buffer =
-                    await event.data.arrayBuffer();
-
-                terminal.write(
-                    new Uint8Array(buffer)
-                );
-
-            }
-
-            else {
-
-                terminal.write(
-                    event.data
-                );
-            }
-        };
-
-
-    // ==================================================
-    // DISCONNECTED
-    // ==================================================
-
-    socket.onclose = () => {
-
-        terminalStatus.textContent =
-            "Disconnected";
-
-
-        terminal.write(
-            "\r\n\r\nConnection closed.\r\n"
-        );
-
-
-        socket = null;
-    };
-
-
-    // ==================================================
-    // ERROR
-    // ==================================================
-
-    socket.onerror = () => {
-
-        terminalStatus.textContent =
-            "Error";
-
-
-        terminal.write(
-            "\r\nTerminal connection error.\r\n"
-        );
-    };
-}
-
-
-// ======================================================
-// TERMINAL INPUT
-// ======================================================
-
-terminal.onData((data) => {
-
-    if (
-        socket &&
-        socket.readyState === WebSocket.OPEN
-    ) {
-
-        socket.send(
-            JSON.stringify({
-                type: "input",
-                data: data
-            })
-        );
-    }
-});
-
-
-// ======================================================
-// TERMINAL RESIZE
-// ======================================================
-
-function sendResize() {
-
-    if (
-        !socket ||
-        socket.readyState !== WebSocket.OPEN
-    ) {
-        return;
-    }
-
-
-    socket.send(
-        JSON.stringify({
-            type: "resize",
-            cols: terminal.cols,
-            rows: terminal.rows
-        })
-    );
-}
-
-
-window.addEventListener(
-    "resize",
-    () => {
-
-        fitAddon.fit();
-
-        sendResize();
-    }
-);
-
-
-// ======================================================
-// TERMINAL BUTTON
-// ======================================================
-
-terminalButton.addEventListener(
-    "click",
-    () => {
-
-        terminalPanel.style.display =
-            "block";
-
-        guiPanel.style.display =
-            "none";
-
-
-        connectTerminal();
-
-
-        setTimeout(() => {
-
-            fitAddon.fit();
-
-            terminal.focus();
-
-            sendResize();
-
-        }, 100);
-    }
-);
-
-
-// ======================================================
-// GUI BUTTON
-// ======================================================
-guiButton.addEventListener(
-    "click",
-    () => {
-        window.location.href =
-            "http://192.168.29.122:6080/vnc_auto.html";
-    }
-);
-
-
-// ======================================================
-// DEFAULT VIEW
-// ======================================================
-
-terminalPanel.style.display =
-    "block";
-
-guiPanel.style.display =
-    "none";
-
-
-connectTerminal();
+function clearAuthentication() { closeConnections(); state.accessToken = null; state.user = null; state.sessions = []; state.currentSession = null; elements.userBar.classList.add("hidden"); elements.userBar.classList.remove("flex"); }
+function showView(view) { elements.authView.classList.toggle("hidden", view !== "auth"); elements.dashboardView.classList.toggle("hidden", view !== "dashboard"); elements.detailsView.classList.toggle("hidden", view !== "details"); if (view === "auth") elements.userBar.classList.add("hidden"); else { elements.userBar.classList.remove("hidden"); elements.userBar.classList.add("flex"); } }
+function switchAuthMode(mode) { const login = mode === "login"; elements.loginForm.classList.toggle("hidden", !login); elements.registerForm.classList.toggle("hidden", login); elements.loginTab.className = login ? "border-b-2 border-blue-500 px-1 pb-3 text-sm font-medium text-white" : "border-b-2 border-transparent px-1 pb-3 text-sm font-medium text-slate-400 hover:text-white"; elements.registerTab.className = login ? "border-b-2 border-transparent px-1 pb-3 text-sm font-medium text-slate-400 hover:text-white" : "border-b-2 border-blue-500 px-1 pb-3 text-sm font-medium text-white"; clearMessage(); }
+
+async function login(event) { event.preventDefault(); clearMessage(); const email = document.getElementById("loginEmail").value.trim(); const password = document.getElementById("loginPassword").value; if (!email || !password) { showMessage("Enter your email and password."); return; } const button = document.getElementById("loginSubmit"); setBusy(button, true, "Logging in..."); try { const payload = await apiRequest("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }); state.accessToken = payload.access_token; state.user = (await apiRequest("/api/auth/me")).user; elements.userEmail.textContent = state.user.email; showView("dashboard"); await loadSessions(); } catch (error) { clearAuthentication(); showView("auth"); showMessage(error.message === "invalid email or password" ? "Invalid email or password." : error.message); } finally { setBusy(button, false); } }
+async function register(event) { event.preventDefault(); clearMessage(); const email = document.getElementById("registerEmail").value.trim(); const password = document.getElementById("registerPassword").value; const confirm = document.getElementById("registerConfirm").value; if (!email || !password || password !== confirm) { showMessage("Enter an email, a password, and matching passwords."); return; } const button = document.getElementById("registerSubmit"); setBusy(button, true, "Creating account..."); try { await apiRequest("/api/auth/register", { method: "POST", body: JSON.stringify({ email, password }) }); document.getElementById("loginEmail").value = email; switchAuthMode("login"); showMessage("Account created. Log in to continue.", "success"); } catch (error) { showMessage(error.message === "email already exists" ? "That email is already registered." : error.message); } finally { setBusy(button, false); } }
+
+async function loadSessions() { elements.sessionsLoading.classList.remove("hidden"); elements.sessionsEmpty.classList.add("hidden"); try { const payload = await apiRequest("/api/labs/sessions"); state.sessions = payload.sessions || []; renderSessions(); } catch (error) { showMessage(error.message); } finally { elements.sessionsLoading.classList.add("hidden"); } }
+function formatDate(value) { if (!value) return "Not available"; const date = new Date(value); return Number.isNaN(date.valueOf()) ? "Not available" : date.toLocaleString(); }
+function shortID(id) { return id ? `${id.slice(0, 8)}...${id.slice(-4)}` : "Unknown"; }
+function statusClass(status) { if (status === "READY") return "status-badge status-ready"; if (status === "FAILED") return "status-badge status-failed"; if (status === "STOPPED") return "status-badge status-stopped"; return "status-badge status-starting"; }
+function renderSessions() { elements.sessionsList.replaceChildren(); if (!state.sessions.length) { elements.sessionsEmpty.classList.remove("hidden"); return; } state.sessions.forEach((session) => { const card = document.createElement("article"); card.className = "rounded-lg border border-slate-800 bg-slate-900 p-5"; const top = document.createElement("div"); top.className = "flex items-start justify-between gap-4"; const title = document.createElement("h2"); title.className = "font-semibold text-white"; title.textContent = session.lab_id; const badge = document.createElement("span"); badge.className = statusClass(session.state); badge.textContent = session.state; top.append(title, badge); const meta = document.createElement("p"); meta.className = "mt-3 text-sm text-slate-400"; meta.textContent = `Session ${shortID(session.id)} · Created ${formatDate(session.created_at)}`; const button = document.createElement("button"); button.className = "secondary-button mt-5 w-full"; button.type = "button"; button.textContent = "Open session"; button.addEventListener("click", () => openSession(session.id)); card.append(top, meta, button); elements.sessionsList.append(card); }); }
+async function createSession(event) { event.preventDefault(); clearMessage(); const labID = document.getElementById("labId").value.trim(); if (!labID) { showMessage("Enter a lab ID."); return; } setBusy(elements.createSubmit, true, "Creating..."); try { await apiRequest("/api/labs/sessions", { method: "POST", body: JSON.stringify({ lab_id: labID }) }); document.getElementById("labId").value = ""; await loadSessions(); showMessage("Lab session created.", "success"); } catch (error) { showMessage(error.message); } finally { setBusy(elements.createSubmit, false); } }
+async function openSession(sessionID) { clearMessage(); try { state.currentSession = await apiRequest(`/api/labs/sessions/${encodeURIComponent(sessionID)}`); renderDetails(); showView("details"); } catch (error) { showMessage(error.message); } }
+function appendMeta(label, value) { const wrapper = document.createElement("div"); const term = document.createElement("dt"); term.className = "text-xs uppercase tracking-wider text-slate-500"; term.textContent = label; const definition = document.createElement("dd"); definition.className = "mt-1 text-sm text-slate-200"; definition.textContent = value; wrapper.append(term, definition); elements.detailsMeta.append(wrapper); }
+function renderDetails() { const session = state.currentSession; const ready = session.state === "READY"; elements.detailsTitle.textContent = session.lab_id; elements.detailsID.textContent = session.id; elements.detailsState.className = statusClass(session.state); elements.detailsState.textContent = session.state; elements.detailsMeta.replaceChildren(); appendMeta("Lab ID", session.lab_id); appendMeta("Created", formatDate(session.created_at)); appendMeta("Updated", formatDate(session.updated_at)); appendMeta("Started", formatDate(session.started_at)); appendMeta("Stopped", formatDate(session.stopped_at)); elements.accessHint.textContent = ready ? "This session is ready for interactive access." : "Interactive access is available only when the backend reports READY."; elements.terminalButton.disabled = !ready; elements.guiButton.disabled = !ready; elements.stopButton.disabled = session.state === "STOPPED" || session.state === "STOPPING"; [elements.terminalButton, elements.guiButton, elements.stopButton].forEach((button) => button.classList.toggle("opacity-50", button.disabled)); }
+
+function ensureTerminal() { if (state.terminal) return; state.terminal = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: "monospace", convertEol: true, scrollback: 3000, theme: { background: "#020617", foreground: "#e2e8f0" } }); state.fitAddon = new FitAddon.FitAddon(); state.terminal.loadAddon(state.fitAddon); state.terminal.open(elements.terminalElement); state.terminal.onData((data) => { if (state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({ type: "input", data })); }); }
+async function connectTerminal() { if (!state.currentSession || state.currentSession.state !== "READY") return; closeTerminal(); ensureTerminal(); elements.terminalPanel.classList.remove("hidden"); elements.terminalStatus.textContent = "Connecting"; state.terminal.clear(); try { const payload = await apiRequest(`/api/labs/sessions/${encodeURIComponent(state.currentSession.id)}/terminal-ticket`, { method: "POST" }); const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"; const socket = new WebSocket(`${protocol}//${window.location.host}/api/terminal?ticket=${encodeURIComponent(payload.ticket)}`); state.socket = socket; socket.binaryType = "arraybuffer"; socket.onopen = () => { elements.terminalStatus.textContent = "Connected"; state.fitAddon.fit(); sendTerminalResize(); state.terminal.focus(); }; socket.onmessage = async (event) => { if (event.data instanceof ArrayBuffer) state.terminal.write(new Uint8Array(event.data)); else if (event.data instanceof Blob) state.terminal.write(new Uint8Array(await event.data.arrayBuffer())); else state.terminal.write(event.data); }; socket.onerror = () => { elements.terminalStatus.textContent = "Connection error"; showMessage("The terminal connection failed. Check that the backend origin matches this page."); }; socket.onclose = () => { elements.terminalStatus.textContent = "Disconnected"; if (state.socket === socket) state.socket = null; }; } catch (error) { elements.terminalStatus.textContent = error.message.includes("not ready") ? "Not ready" : "Authorization failed"; showMessage(error.message); } }
+function sendTerminalResize() { if (state.socket?.readyState === WebSocket.OPEN && state.terminal) state.socket.send(JSON.stringify({ type: "resize", cols: state.terminal.cols, rows: state.terminal.rows })); }
+function closeTerminal() { if (state.socket) state.socket.close(); state.socket = null; if (elements.terminalStatus) elements.terminalStatus.textContent = "Disconnected"; }
+async function openGUI() { if (!state.currentSession || state.currentSession.state !== "READY") return; elements.guiStatus.textContent = "Authorizing"; try { const payload = await apiRequest(`/api/labs/sessions/${encodeURIComponent(state.currentSession.id)}/gui-ticket`, { method: "POST" }); elements.guiFrame.src = `/api/labs/sessions/${encodeURIComponent(state.currentSession.id)}/gui/vnc_auto.html?ticket=${encodeURIComponent(payload.ticket)}`; elements.guiPanel.classList.remove("hidden"); elements.guiStatus.textContent = "Connected"; } catch (error) { elements.guiStatus.textContent = error.message.includes("not ready") ? "Not ready" : "Authorization failed"; showMessage(error.message); } }
+async function stopSession() { if (!state.currentSession || elements.stopButton.disabled) return; setBusy(elements.stopButton, true, "Stopping..."); try { state.currentSession = await apiRequest(`/api/labs/sessions/${encodeURIComponent(state.currentSession.id)}/stop`, { method: "POST" }); closeConnections(); renderDetails(); await loadSessions(); showMessage("Session stopped.", "success"); } catch (error) { showMessage(error.message); } finally { setBusy(elements.stopButton, false); } }
+function closeConnections() { closeTerminal(); elements.guiFrame.src = "about:blank"; elements.guiPanel.classList.add("hidden"); elements.terminalPanel.classList.add("hidden"); }
+function logout() { clearAuthentication(); showView("auth"); switchAuthMode("login"); showMessage("You have been logged out.", "success"); }
+
+elements.loginTab.addEventListener("click", () => switchAuthMode("login")); elements.registerTab.addEventListener("click", () => switchAuthMode("register")); elements.loginForm.addEventListener("submit", login); elements.registerForm.addEventListener("submit", register); elements.createForm.addEventListener("submit", createSession); elements.refreshButton.addEventListener("click", loadSessions); elements.backButton.addEventListener("click", () => { closeConnections(); showView("dashboard"); }); elements.terminalButton.addEventListener("click", connectTerminal); elements.guiButton.addEventListener("click", openGUI); elements.stopButton.addEventListener("click", stopSession); document.getElementById("logoutButton").addEventListener("click", logout); document.getElementById("brandButton").addEventListener("click", () => { if (state.user) showView("dashboard"); }); window.addEventListener("resize", () => { if (state.fitAddon) { state.fitAddon.fit(); sendTerminalResize(); } }); window.addEventListener("beforeunload", closeConnections);
+showView("auth");

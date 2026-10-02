@@ -85,6 +85,15 @@ func main() {
 		_ = database.Close()
 		log.Fatalf("terminal handler initialization failed: %v", err)
 	}
+	guiHandler, err := NewGUIHandler(labSessionService, labRuntime, NewGUIAccessStore())
+	if err != nil {
+		_ = database.Close()
+		log.Fatalf("GUI handler initialization failed: %v", err)
+	}
+	if err := guiHandler.RegisterRoute(labSessionHandler); err != nil {
+		_ = database.Close()
+		log.Fatalf("GUI route registration failed: %v", err)
+	}
 
 	defer database.Close()
 
